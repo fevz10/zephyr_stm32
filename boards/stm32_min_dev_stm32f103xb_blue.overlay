@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) 2017, embedjournal.com
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/ {
+	model = "STM32 Minimum Development Board (Blue)";
+	compatible = "stm32_min_dev_blue", "st,stm32f103c8";
+        chosen {
+                zephyr,canbus = &can1;
+        };
+	leds {
+		led: led {
+			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+/*
+&adc1 {
+    status = "okay";
+    #address-cells = <1>;
+    #size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+*/
+&can1 {
+        pinctrl-0 = <&can_rx_remap1_pb8 &can_tx_remap1_pb9>;
+        pinctrl-names = "default";
+        status = "okay";
+};
+

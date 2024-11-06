@@ -1,0 +1,12 @@
+# Private config options
+
+mainmenu "Zephyr_STM32 Project"
+
+config LOOPBACK_MODE
+	bool "Loopback LOOPBACK_MODE"
+	default y
+	help
+	  Set the controller to loopback mode.
+	  This allows testing without a second board.
+
+source "Kconfig.zephyr"
