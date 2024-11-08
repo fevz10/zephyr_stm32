@@ -7,9 +7,11 @@
 / {
 	model = "STM32 Minimum Development Board (Blue)";
 	compatible = "stm32_min_dev_blue", "st,stm32f103c8";
+	
         chosen {
                 zephyr,canbus = &can1;
         };
+        
 	leds {
 		led: led {
 			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
@@ -40,6 +42,7 @@
 	};
 };
 */
+
 &can1 {
         pinctrl-0 = <&can_rx_remap1_pb8 &can_tx_remap1_pb9>;
         pinctrl-names = "default";
