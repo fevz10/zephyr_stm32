@@ -6,228 +6,125 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
+#include <zephyr/logging/log.h>
 
-#define LED_MSG_ID 0xFF
-#define SET_LED 1
-#define RESET_LED 0
-#define PORTB DT_NODELABEL(gpiob)
-#define SLEEP_TIME K_MSEC(250)
+LOG_MODULE_REGISTER(zephyr_stm32);
 
-#define LED0_NODE DT_ALIAS(led0)
+#define ADC_THREAD_STACK_SIZE 1024
+#define ADC_THREAD_PRIORITY 7
+#define CAN_THREAD_STACK_SIZE 1024
+#define CAN_THREAD_PRIORITY 7
 
+#define ADC_NODE DT_NODELABEL(adc1)
 #define ADC_RESOLUTION 12
 #define ADC_GAIN ADC_GAIN_1
 #define ADC_REFERENCE ADC_REF_INTERNAL
-#define ADC_CHANNEL_ID_1 0
-#define ADC_CHANNEL_ID_2 1
-#define ADC_CHANNEL_ID_3 2
-#define ADC_CHANNEL_ID_4 3
-#define ADC_BUFFER_SIZE 1
 
-static const struct adc_channel_cfg channel_cfg_1 = {
-    .gain = ADC_GAIN,
-    .reference = ADC_REFERENCE,
-    .acquisition_time = ADC_ACQ_TIME_DEFAULT,
-    .channel_id = ADC_CHANNEL_ID_1,
-    .differential = 0,
-};
+#define ADC_CHANNEL_ID_0 0
+#define ADC_CHANNEL_ID_1 1
 
-static const struct adc_channel_cfg channel_cfg_2 = {
-    .gain = ADC_GAIN,
-    .reference = ADC_REFERENCE,
-    .acquisition_time = ADC_ACQ_TIME_DEFAULT,
-    .channel_id = ADC_CHANNEL_ID_2,
-    .differential = 0,
-};
+#define CANBUS_NODE DT_CHOSEN(zephyr_canbus)
+#define LED0_NODE DT_ALIAS(led0)
+#define SW0_NODE DT_ALIAS(sw0)
+#define SW1_NODE DT_ALIAS(sw1)
 
-static const struct adc_channel_cfg channel_cfg_3 = {
-    .gain = ADC_GAIN,
-    .reference = ADC_REFERENCE,
-    .acquisition_time = ADC_ACQ_TIME_DEFAULT,
-    .channel_id = ADC_CHANNEL_ID_3,
-    .differential = 0,
-};
 
-static const struct adc_channel_cfg channel_cfg_4 = {
-    .gain = ADC_GAIN,
-    .reference = ADC_REFERENCE,
-    .acquisition_time = ADC_ACQ_TIME_DEFAULT,
-    .channel_id = ADC_CHANNEL_ID_4,
-    .differential = 0,
-};
+K_THREAD_STACK_DEFINE(adc_thread_stack, ADC_THREAD_STACK_SIZE);
+K_THREAD_STACK_DEFINE(can_thread_stack, CAN_THREAD_STACK_SIZE);
 
-static int16_t sample_buffer_1[ADC_BUFFER_SIZE];
-static int16_t sample_buffer_2[ADC_BUFFER_SIZE];
-static int16_t sample_buffer_3[ADC_BUFFER_SIZE];
-static int16_t sample_buffer_4[ADC_BUFFER_SIZE];
-
-const struct device *const can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
+struct gpio_dt_spec buttonSoC = GPIO_DT_SPEC_GET(SW0_NODE, gpios);
+struct gpio_dt_spec buttonVolt = GPIO_DT_SPEC_GET(SW1_NODE, gpios);
+static const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1));
+static const struct device *can_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_canbus));
 struct gpio_dt_spec led = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
+//static const struct device *gpio_dev;
+static int16_t adc_sample_buffer1[1], adc_sample_buffer2[1];
 
-struct k_work_poll change_led_work;
-struct k_work state_change_work;
-enum can_state current_state;
-struct can_bus_err_cnt current_err_cnt;
+struct k_thread adc_thread_data;
+struct k_thread can_thread_data;
 
-CAN_MSGQ_DEFINE(change_led_msgq, 2);
-
-static struct k_poll_event change_led_events[1] = {
-	K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
-					K_POLL_MODE_NOTIFY_ONLY,
-					&change_led_msgq, 0)
+struct can_frame can_frame = {
+	.flags = 0,
+	.id = 0x123,
+	.dlc = 8
 };
+int btnStateSoC, btnStateVolt;
 
-void tx_irq_callback(const struct device *dev, int error, void *arg)
-{
-	char *sender = (char *)arg;
+void adc_read_channels();
+void can_send_message();
+void adc_task_handler(void *arg1, void *arg2, void *arg3);
+void can_task_handler(void *arg1, void *arg2, void *arg3);
 
-	ARG_UNUSED(dev);
-
-	if (error != 0)
-	{
-		printf("Callback! error-code: %d\nSender: %s\n", error, sender);
-	}
-}
-
-char *state_to_str(enum can_state state)
-{
-	switch (state) {
-	case CAN_STATE_ERROR_ACTIVE:
-		return "error-active";
-	case CAN_STATE_ERROR_WARNING:
-		return "error-warning";
-	case CAN_STATE_ERROR_PASSIVE:
-		return "error-passive";
-	case CAN_STATE_BUS_OFF:
-		return "bus-off";
-	case CAN_STATE_STOPPED:
-		return "stopped";
-	default:
-		return "unknown";
-	}
-}
-
-void state_change_work_handler(struct k_work *work)
-{
-	printf("State Change ISR\nstate: %s\n"
-	       "rx error count: %d\n"
-	       "tx error count: %d\n",
-		state_to_str(current_state), current_err_cnt.rx_err_cnt, current_err_cnt.tx_err_cnt);
-}
-
-void state_change_callback(const struct device *dev, enum can_state state, struct can_bus_err_cnt err_cnt, void *user_data)
-{
-	struct k_work *work = (struct k_work *)user_data;
-	ARG_UNUSED(dev);
-
-	current_state = state;
-	current_err_cnt = err_cnt;
-	k_work_submit(work);
-}
 
 int main(void)
 {
-	uint8_t toggle = 1;
     int ret;
+	k_tid_t adc_tid, can_tid;
+    printf("Starting Zephyr Project\n");
 
-	printf("Starting Zephyr project\n");
-
-    const struct device *adc_dev = DEVICE_DT_GET(DT_NODELABEL(adc1));
-
-    if (!device_is_ready(adc_dev)) {
-        printf("ADC device not ready");
-        return -1;
+    if(!device_is_ready(adc_dev))
+    {
+        printf("ADC: Device %s not ready.\n", adc_dev->name);
     }
 
-    if (adc_channel_setup(adc_dev, &channel_cfg_1) < 0) {
-        printf("Error setting up channel 1");
-        return -1;
+	printf("ADC: Device %s is initialized.\n", adc_dev->name);
+
+    if(!device_is_ready(can_dev))
+    {
+        printf("CAN: Device %s not ready.\n", can_dev->name);
     }
 
-    if (adc_channel_setup(adc_dev, &channel_cfg_2) < 0) {
-        printf("Error setting up channel 2");
-        return -1;
+    ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
+    if (0 != ret)
+    {
+		printf("Error setting CAN mode [%d]\n", ret);
+		return -1;  
     }
-
-	if (adc_channel_setup(adc_dev, &channel_cfg_3) < 0) {
-        printf("Error setting up channel 3");
-        return -1;
-    }
-
-	if (adc_channel_setup(adc_dev, &channel_cfg_4) < 0) {
-        printf("Error setting up channel 3");
-        return -1;
-    }
-
-
-    struct adc_sequence sequence_1 = {
-        .channels    = BIT(ADC_CHANNEL_ID_1),
-        .buffer      = sample_buffer_1,
-        .buffer_size = sizeof(sample_buffer_1),
-        .resolution  = ADC_RESOLUTION,
-    };
-
-	struct adc_sequence sequence_2 = {
-        .channels    = BIT(ADC_CHANNEL_ID_2),
-        .buffer      = sample_buffer_2,
-        .buffer_size = sizeof(sample_buffer_2),
-        .resolution  = ADC_RESOLUTION,
-    };
-
-	struct adc_sequence sequence_3 = {
-        .channels    = BIT(ADC_CHANNEL_ID_3),
-        .buffer      = sample_buffer_3,
-        .buffer_size = sizeof(sample_buffer_3),
-        .resolution  = ADC_RESOLUTION,
-    };
-
-	struct adc_sequence sequence_4 = {
-        .channels    = BIT(ADC_CHANNEL_ID_4),
-        .buffer      = sample_buffer_4,
-        .buffer_size = sizeof(sample_buffer_4),
-        .resolution  = ADC_RESOLUTION,
-    };
-	printf("ADC device is initialized\n");
-
-	const struct can_filter change_led_filter = {
-		.flags = 0U,
-		.id = LED_MSG_ID,
-		.mask = CAN_STD_ID_MASK
-	};
-	struct can_frame change_led_frame = {
-		.flags = 0,
-		.id = LED_MSG_ID,
-		.dlc = 1
-	};
-
-	if (!device_is_ready(can_dev))
+    ret = can_start(can_dev);
+	if (0 != ret)
 	{
-		printf("CAN: Device %s not ready.\n", can_dev->name);
+		printf("Error starting CAN controller [%d]\n", ret);
 		return 0;
 	}
 
-	ret = can_set_mode(can_dev, CAN_MODE_NORMAL);
-	if (ret != 0)
-	{
-		printf("Error setting CAN mode [%d]", ret);
-		return 0;
-	}
-	ret = can_start(can_dev);
-	if (ret != 0)
-	{
-		printf("Error starting CAN controller [%d]", ret);
-		return 0;
-	}
-	
-	printf("CAN device is initialized\n");
+    printf("CAN: Device %s is initialized.\n", can_dev->name);
+
+    if (buttonSoC.port != NULL)
+    {
+		if (!gpio_is_ready_dt(&buttonSoC))
+		{
+			printf("SW: Device is not ready.\n");
+			return -1;
+		}
+		ret = gpio_pin_configure_dt(&buttonSoC, GPIO_INPUT);
+		if (ret < 0)
+		{
+			printf("Error setting SW pin to input mode [%d]", ret);
+			buttonSoC.port = NULL;
+		}
+    }
+
+    if (buttonVolt.port != NULL)
+    {
+		if (!gpio_is_ready_dt(&buttonVolt))
+		{
+			printf("SW: Device is not ready.\n");
+			return -1;
+		}
+		ret = gpio_pin_configure_dt(&buttonVolt, GPIO_INPUT);
+		if (ret < 0)
+		{
+			printf("Error setting SW pin to input mode [%d]", ret);
+			buttonVolt.port = NULL;
+		}
+    }
 
 	if (led.port != NULL)
 	{
 		if (!gpio_is_ready_dt(&led))
 		{
-			printf("LED: Device %s not ready.\n",
-			       led.port->name);
-			return 0;
+			printf("LED: Device %s not ready.\n", led.port->name);
+			return -1;
 		}
 		ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_HIGH);
 		if (ret < 0)
@@ -237,54 +134,116 @@ int main(void)
 		}
 	}
 
-	k_work_init(&state_change_work, state_change_work_handler);
-
-	ret = can_add_rx_filter_msgq(can_dev, &change_led_msgq, &change_led_filter);
-	if (ret == -ENOSPC)
+	printf("Device initializations are finished\n");
+	
+	adc_tid = k_thread_create(
+		&adc_thread_data,
+		adc_thread_stack,
+		K_THREAD_STACK_SIZEOF(adc_thread_stack),
+		adc_task_handler,
+		NULL,NULL,NULL,
+		ADC_THREAD_PRIORITY, 0,K_NO_WAIT);
+	if (!adc_tid)
 	{
-		printf("Error, no filter available!\n");
-		return 0;
+		printf("ERROR spawning ADC THREAD\n");
 	}
+	
 
-	printf("Change LED filter ID: %d\n", ret);
-
-	ret = k_work_poll_submit(&change_led_work, change_led_events,
-				 ARRAY_SIZE(change_led_events), K_FOREVER);
-	if (ret != 0) {
-		printf("Failed to submit msgq polling: %d", ret);
-		return 0;
-	}
-
-	can_set_state_change_callback(can_dev, state_change_callback, &state_change_work);
-	printf("Finished init.\n");
-
-	while (1)
+	can_tid = k_thread_create(
+		&can_thread_data,
+		can_thread_stack,
+		K_THREAD_STACK_SIZEOF(can_thread_stack),
+		can_task_handler,
+		NULL,NULL,NULL,
+		CAN_THREAD_PRIORITY, 0,K_NO_WAIT);
+	if (!can_tid)
 	{
-        if ((adc_read(adc_dev, &sequence_1) < 0))
-		{
-            printf("Error reading ADC\n");
-        }
-
-		if (adc_read(adc_dev, &sequence_2) < 0)
-		{
-            printf("Error reading ADC\n");
-        }
-
-		if (adc_read(adc_dev, &sequence_3) < 0)
-		{
-            printf("Error reading ADC\n");
-        } 
-
-		if (adc_read(adc_dev, &sequence_4) < 0)
-		{
-            printf("Error reading ADC\n");
-        } 
-		int sw1_state = (sample_buffer_3[0] < 2047) ? 0 : 1;
-		int sw2_state = (sample_buffer_4[0] < 2047) ? 0 : 1;
-		printf("ADC Channel 0: %d | ADC Channel 1: %d | SW1: %d | SW2: %d\n", sample_buffer_1[0], sample_buffer_2[0],sw1_state,sw2_state);
-		change_led_frame.data[0] = toggle++ & 0x01 ? SET_LED : RESET_LED;
-		can_send(can_dev, &change_led_frame, K_FOREVER, tx_irq_callback, "LED change");
-        ret = gpio_pin_toggle_dt(&led);
-		k_sleep(SLEEP_TIME);
+		printf("ERROR spawning CAN THREAD\n");
 	}
+
+	printf("Starting Zephyr App\n");
+}
+
+
+void adc_read_channels()
+{
+    struct adc_sequence sequence_1 = {
+        .channels = BIT(ADC_CHANNEL_ID_0),
+        .buffer = adc_sample_buffer1,
+        .buffer_size = sizeof(adc_sample_buffer1),
+        .resolution = ADC_RESOLUTION,
+    };
+    struct adc_sequence sequence_2 = {
+        .channels = BIT(ADC_CHANNEL_ID_1),
+        .buffer = adc_sample_buffer2,
+        .buffer_size = sizeof(adc_sample_buffer2),
+        .resolution = ADC_RESOLUTION,
+    };
+
+
+    if (adc_read(adc_dev, &sequence_1) != 0)
+    {
+        printf("ADC read failed\n");
+    }
+	if (adc_read(adc_dev, &sequence_2) != 0)
+    {
+        printf("ADC read failed\n");
+    } 
+    btnStateSoC = gpio_pin_get_dt(&buttonSoC);
+    btnStateVolt = gpio_pin_get_dt(&buttonVolt);
+    //printf("SW0 State : %d\n", btnStateSoC);
+    //printf("SW1 State : %d\n", btnStateVolt);
+    
+    printf("ADC readings: %d, %d\nDigital Input readings : %d, %d\n",
+                adc_sample_buffer1[0], adc_sample_buffer2[0],
+                btnStateSoC, btnStateVolt);
+    
+}
+
+void can_send_message()
+{
+    can_frame.data[0] = adc_sample_buffer1[0] & 0xFF;
+    can_frame.data[1] = (adc_sample_buffer1[0] >> 8) & 0xFF;
+    can_frame.data[2] = adc_sample_buffer2[0] & 0xFF;
+    can_frame.data[3] = (adc_sample_buffer2[0] >> 8) & 0xFF;
+    can_frame.data[4] = btnStateSoC & 0xFF;
+    can_frame.data[5] = btnStateVolt & 0xFF;
+    can_frame.data[6] = 0x00;
+    can_frame.data[7] = 0x00;
+
+    if (can_send(can_dev, &can_frame, K_MSEC(100), NULL, NULL) != 0)
+    {
+        printf("CAN send failed\n");
+        gpio_pin_set_dt(&led, 0);
+    } 
+    else
+    {
+        //printf("CAN message sent\n");
+        gpio_pin_toggle_dt(&led);
+        //gpio_pin_set_dt(&led, 1);
+    }
+}
+
+void adc_task_handler(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+    while (1)
+	{
+        adc_read_channels();
+        k_sleep(K_MSEC(25));
+    }
+}
+
+void can_task_handler(void *arg1, void *arg2, void *arg3)
+{
+	ARG_UNUSED(arg1);
+	ARG_UNUSED(arg2);
+	ARG_UNUSED(arg3);
+    while (1) 
+	{
+        can_send_message();
+        k_sleep(K_MSEC(100));
+    }
 }

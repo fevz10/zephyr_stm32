@@ -17,6 +17,23 @@
 			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
 		};
 	};
+	
+	gpio_keys {
+		compatible = "gpio-keys";
+		switchSoC: button {
+			label = "Key SoC";
+			gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
+		};
+		switchVolt: button2 {
+			label = "Key Volt";
+			gpios = <&gpiob 1 GPIO_ACTIVE_HIGH>;
+		};
+	};	
+	
+	aliases {
+		sw0 = &switchSoC;
+		sw1 = &switchVolt;
+	};
 };
 
 /*
@@ -48,4 +65,3 @@
         pinctrl-names = "default";
         status = "okay";
 };
-
