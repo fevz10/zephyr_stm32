@@ -8,24 +8,29 @@
 	model = "STM32 Minimum Development Board (Blue)";
 	compatible = "stm32_min_dev_blue", "st,stm32f103c8";
 	
-        chosen {
-                zephyr,canbus = &can1;
-        };
+    chosen {
+        zephyr,canbus = &can1;
+		zephyr,spi = &spi2;
+    };
         
 	leds {
 		led: led {
 			gpios = <&gpioc 13 GPIO_ACTIVE_LOW>;
+		};
+		gpio_cs: gpio_cs {
+			gpios = <&gpiob 7  GPIO_ACTIVE_LOW>;
+			label = "GPIO_CS";
 		};
 	};
 	
 	gpio_keys {
 		compatible = "gpio-keys";
 		switchSoC: button {
-			label = "Key SoC";
+			label = "SW SoC";
 			gpios = <&gpiob 0 GPIO_ACTIVE_HIGH>;
 		};
 		switchVolt: button2 {
-			label = "Key Volt";
+			label = "SW Voltage";
 			gpios = <&gpiob 1 GPIO_ACTIVE_HIGH>;
 		};
 	};	
@@ -33,6 +38,7 @@
 	aliases {
 		sw0 = &switchSoC;
 		sw1 = &switchVolt;
+		cs = &gpio_cs;
 	};
 };
 
@@ -64,4 +70,19 @@
         pinctrl-0 = <&can_rx_remap1_pb8 &can_tx_remap1_pb9>;
         pinctrl-names = "default";
         status = "okay";
+};
+
+&spi2 {
+	pinctrl-0 = <&spi2_nss_master_pb12 &spi2_sck_master_pb13
+		     &spi2_miso_master_pb14 &spi2_mosi_master_pb15>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&gpioa {
+	status = "okay";
+};
+
+&gpiob {
+	status = "okay";
 };

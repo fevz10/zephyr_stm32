@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "typeinfo": "c"
+        "typeinfo": "c",
+        "kernel.h": "c",
+        "device.h": "c"
     }
 }
